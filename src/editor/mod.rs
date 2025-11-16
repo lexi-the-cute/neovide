@@ -25,7 +25,7 @@ use crate::{
     running_tracker::RunningTracker,
     settings::Settings,
     units::{GridRect, GridSize},
-    window::{UserEvent, WindowCommand, WindowSettings},
+    window::{EventPayload, WindowCommand, WindowSettings},
 };
 
 #[cfg(target_os = "macos")]
@@ -100,7 +100,7 @@ pub struct Editor {
     pub draw_command_batcher: DrawCommandBatcher,
     pub current_mode_index: Option<u64>,
     pub ui_ready: bool,
-    event_loop_proxy: EventLoopProxy<UserEvent>,
+    event_loop_proxy: EventLoopProxy<EventPayload>,
     #[allow(dead_code)]
     settings: Arc<Settings>,
     composition_order: u64,
@@ -108,7 +108,7 @@ pub struct Editor {
 }
 
 impl Editor {
-    pub fn new(event_loop_proxy: EventLoopProxy<UserEvent>, settings: Arc<Settings>) -> Self {
+    pub fn new(event_loop_proxy: EventLoopProxy<EventPayload>, settings: Arc<Settings>) -> Self {
         Editor {
             windows: HashMap::new(),
             cursor: Cursor::new(),
@@ -124,7 +124,11 @@ impl Editor {
         }
     }
 
-    pub fn handle_redraw_event(&mut self, event: RedrawEvent) {
+    pub fn handle_redraw_event(
+        &mut self,
+        winit_window_id: winit::window::WindowId,
+        event: RedrawEvent,
+    ) {
         match event {
             RedrawEvent::SetTitle { mut title } => {
                 tracy_zone!("EditorSetTitle");
@@ -188,7 +192,8 @@ impl Editor {
                 self.send_cursor_info();
                 {
                     trace!("send_batch");
-                    self.draw_command_batcher.send_batch(&self.event_loop_proxy);
+                    self.draw_command_batcher
+                        .send_batch(winit_window_id, &self.event_loop_proxy);
                 }
             }
             RedrawEvent::DefaultColorsSet { colors } => {
@@ -206,7 +211,8 @@ impl Editor {
                 self.draw_command_batcher
                     .queue(DrawCommand::DefaultStyleChanged(Style::new(colors)));
                 self.redraw_screen();
-                self.draw_command_batcher.send_batch(&self.event_loop_proxy);
+                self.draw_command_batcher
+                    .send_batch(winit_window_id, &self.event_loop_proxy);
             }
             RedrawEvent::HighlightAttributesDefine { id, style } => {
                 tracy_zone!("EditorHighlightAttributesDefine");
@@ -373,9 +379,11 @@ impl Editor {
                     .event_loop_proxy
                     .send_event(WindowCommand::Minimize.into());
             }
-            RedrawEvent::NeovideSetRedraw(enable) => self
-                .draw_command_batcher
-                .set_enabled(enable, &self.event_loop_proxy),
+            RedrawEvent::NeovideSetRedraw(enable) => self.draw_command_batcher.set_enabled(
+                enable,
+                winit_window_id,
+                &self.event_loop_proxy,
+            ),
             RedrawEvent::NeovideIntroBannerAllowed(allowed) => {
                 self.intro_message_extender.set_sponsor_allowed(
                     allowed,
@@ -764,14 +772,19 @@ fn grid_line_cells_to_text(cells: &[GridLineCell]) -> String {
     }
     text
 }
-pub fn start_editor(
-    event_loop_proxy: EventLoopProxy<UserEvent>,
+
+pub fn start_editor_handler(
+    winit_window_id: winit::window::WindowId,
+    event_loop_proxy: EventLoopProxy<EventPayload>,
     running_tracker: RunningTracker,
     settings: Arc<Settings>,
 ) -> NeovimHandler {
-    let (sender, mut receiver) = unbounded_channel();
+    let (redraw_event_sender, mut redraw_event_receiver) = unbounded_channel();
+    let (ui_command_sender, ui_command_receiver) = unbounded_channel();
     let handler = NeovimHandler::new(
-        sender,
+        redraw_event_sender,
+        ui_command_sender,
+        ui_command_receiver,
         event_loop_proxy.clone(),
         running_tracker,
         settings.clone(),
@@ -779,8 +792,8 @@ pub fn start_editor(
     thread::spawn(move || {
         let mut editor = Editor::new(event_loop_proxy, settings.clone());
 
-        while let Some(editor_command) = receiver.blocking_recv() {
-            editor.handle_redraw_event(editor_command);
+        while let Some(editor_command) = redraw_event_receiver.blocking_recv() {
+            editor.handle_redraw_event(winit_window_id, editor_command);
         }
     });
     handler
