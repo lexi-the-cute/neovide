@@ -717,6 +717,24 @@ Setting `neovide_macos_simple_fullscreen` will hide the dock and menu bar for Ma
 
 This won’t work if the window was already in the native fullscreen.
 
+#### Force Click URL Preview (MacOS only)
+
+VimScript:
+
+```vim
+let g:neovide_force_click_url_preview = v:true
+```
+
+Lua:
+
+```lua
+vim.g.neovide_force_click_url_preview = true
+```
+
+When this flag is `v:true` (the default), force-clicking a URL shows the native Quick Look panel
+directly inside Neovide. Set it to `v:false` if you prefer URLs to open with macOS default
+browser instead.
+
 #### Remember Previous Window Size
 
 VimScript:

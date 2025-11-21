@@ -42,6 +42,71 @@ local function get_clipboard(register)
     end
 end
 
+local function take_entity_under_cursor()
+    local mouse_pos = vim.fn.getmousepos()
+    local guifont = vim.api.nvim_get_option("guifont")
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local line = vim.api.nvim_get_current_line()
+
+    local entity = ""
+    local col = cursor[2]
+    local entity_kind = "text"
+
+    local cursor_column = cursor[2] + 1
+
+    local function find_span(pattern, plain)
+        local start = 1
+        while true do
+            local s, e = line:find(pattern, start, plain)
+            if not s then
+                return nil, nil
+            end
+            if cursor_column >= s and cursor_column <= e then
+                return s, e
+            end
+            start = e + 1
+        end
+    end
+
+    local url_pattern = "https?://[%w-_%.]+%.%w[%w-_%.%%%?%.:/+=&%%[%]#]*"
+    local url_start, url_end = find_span(url_pattern, false)
+    if url_start then
+        entity = line:sub(url_start, url_end)
+        col = url_start - 1
+        entity_kind = "url"
+    else
+        local cfile = vim.fn.expand("<cfile>")
+        if cfile and cfile ~= "" then
+            local literal_start, literal_end = find_span(cfile, true)
+            if literal_start then
+                local absolute_path = vim.fn.fnamemodify(cfile, ":p")
+                if absolute_path ~= "" and vim.loop.fs_stat(absolute_path) then
+                    entity = absolute_path
+                    col = literal_start - 1
+                    entity_kind = "file"
+                end
+            end
+        end
+    end
+
+    if entity == "" then
+        local word, word_col, _ =
+            unpack(vim.fn.matchstrpos(line, [[\k*\%]] .. cursor[2] + 1 .. [[c\k*]]))
+        if word and word ~= "" then
+            entity = word
+            col = word_col
+        end
+    end
+
+    -- get screen position based on the entity start to account for sign/number columns
+    local screenpos = vim.fn.screenpos(mouse_pos.winid, cursor[1], col + 1)
+
+    local screen_row = math.max(screenpos.row - 1, 0)
+    local screen_col = math.max(screenpos.col - 1, 0)
+
+    return screen_col, screen_row, entity, guifont, entity_kind
+end
+
 -- Quit when Command+Q is pressed on macOS
 if vim.fn.has("macunix") then
     vim.keymap.set({ "n", "i", "c", "v", "o", "t", "l" }, "<D-q>", function()
@@ -78,6 +143,13 @@ end
 vim.api.nvim_create_user_command("NeovideFocus", function()
     rpcnotify("neovide.focus_window")
 end, {})
+
+if vim.fn.has("mac") == 1 then
+    vim.api.nvim_create_user_command("NeovideForceClick", function()
+        local col, row, entity, guifont, entity_kind = take_entity_under_cursor()
+        rpcnotify("neovide.force_click", col, row, entity, guifont, entity_kind)
+    end, {})
+end
 
 vim.api.nvim_exec2(
     [[
